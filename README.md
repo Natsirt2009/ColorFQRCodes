@@ -1,6 +1,6 @@
 # ColorFQRCodes
 
-ColorFQRCodes is a Kotlin/JVM library and desktop app for custom multicolor matrix codes. It supports 1–8 bits per module (2–256 colors), UTF-8 payloads up to 65,535 bytes, CRC-32 validation, and Reed–Solomon error correction. The encoded format matches `anybpp.py`'s palette, finder layout, framing, and ECC scheme.
+ColorFQRCodes is a Kotlin/JVM library and desktop app for custom multicolor matrix codes. It supports 1–8 bits per module (2–256 colors), UTF-8 payloads up to 65,535 bytes, CRC-32 validation, and Reed–Solomon error correction.
 
 ## Requirements
 
@@ -37,8 +37,6 @@ dependencies {
 ```
 
 No separate OpenCV dependency is needed: it is published as an API dependency so the decoder's public types resolve for consumers. The artifact targets the JVM and requires JDK 17 or later.
-
-The artifact is currently published to the local Maven repository, not Maven Central. To share it with other developers, publish the same Maven publication to a Maven repository they can access, then add that repository to their `repositories` block. Use the same `implementation("net.natsirt.colorfqrcodes:colorfqrcodes:1.0.0")` declaration.
 
 ## Library API
 
