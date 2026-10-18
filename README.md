@@ -98,3 +98,4 @@ $env:COLORFQ_HTTPS_PASSWORD = 'your-keystore-password'
 .\gradlew.bat test
 .\gradlew.bat build
 ```
+QR Code is a registered trademark of DENSO WAVE INCORPORATED.
