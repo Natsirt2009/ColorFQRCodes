@@ -1,0 +1,851 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Color2QR Scanner</title>
+<style>
+  :root {
+    color-scheme: dark;
+    font-family: system-ui, sans-serif;
+    background: #111318;
+    color: #f5f5f0;
+  }
+  * { box-sizing: border-box; }
+  body { max-width: 760px; margin: auto; padding: 20px; }
+  h1 { font-size: 1.65rem; }
+  p { color: #b9bdc8; line-height: 1.5; }
+  section {
+    background: #1d2028;
+    border: 1px solid #353945;
+    border-radius: 14px;
+    padding: 16px;
+    margin: 16px 0;
+  }
+  button, input, textarea {
+    font: inherit;
+    border-radius: 8px;
+    padding: 11px;
+    width: 100%;
+    margin: 5px 0;
+  }
+  button {
+    cursor: pointer;
+    border: 0;
+    background: #4079ee;
+    color: white;
+    font-weight: 650;
+  }
+  button.secondary { background: #343946; }
+  textarea, input {
+    color: #fff;
+    background: #12141a;
+    border: 1px solid #414654;
+  }
+  textarea { min-height: 90px; resize: vertical; }
+  video, canvas {
+    display: block;
+    width: 100%;
+    max-height: 65vh;
+    object-fit: contain;
+    background: #090a0d;
+    border-radius: 8px;
+    margin: 10px 0;
+  }
+  #matrix { image-rendering: pixelated; }
+  #status { white-space: pre-wrap; color: #b8d0ff; }
+  .palette { display:flex; gap:8px; margin:12px 0; }
+  .swatch { flex:1; height:35px; border-radius:6px; }
+  label { display:block; margin-top:10px; }
+</style>
+</head>
+<body>
+<h1>Color2QR</h1>
+<p>Four-color, two-bit matrix encoder and camera interface.</p>
+
+<section>
+  <h2>1. Encode text</h2>
+  <textarea id="source" placeholder="Enter text to encode">Hello, world!</textarea>
+  <label for="scale">Pixels per module</label>
+  <input id="scale" type="number" min="2" max="24" value="8">
+  <button id="encode">Generate color matrix</button>
+  <canvas id="matrix"></canvas>
+  <button id="download" class="secondary">Download PNG</button>
+  <div id="encodeStatus"></div>
+</section>
+
+<section>
+  <h2>2. Camera scanner</h2>
+  <p>Allow camera access, then point the camera at a code.</p>
+  <button id="start">Start camera</button>
+  <button id="stop" class="secondary">Stop camera</button>
+  <video id="video" autoplay muted playsinline></video>
+  <button id="capture" class="secondary">Capture frame</button>
+  <canvas id="snapshot"></canvas>
+  <p id="status">Camera stopped.</p>
+</section>
+
+<section>
+  <h2>3. Decoded text</h2>
+  <textarea id="result" readonly placeholder="Decoded content will appear here"></textarea>
+  <button id="copy">Copy decoded text</button>
+  <p>Full custom-format camera decoding requires grid detection, perspective correction and Reed–Solomon decoding.</p>
+</section>
+<script async src="https://docs.opencv.org/4.x/opencv.js"></script>
+<script>
+"use strict";
+
+
+function gfDiv(a, b) {
+  if (!b) throw Error("Division by zero in GF(256)");
+  if (!a) return 0;
+  return GF_EXP[(GF_LOG[a] - GF_LOG[b] + 255) % 255];
+}
+
+function gfPow(a, n) {
+  if (n === 0) return 1;
+  if (!a) return 0;
+  return GF_EXP[((GF_LOG[a] * n) % 255 + 255) % 255];
+}
+
+function polyEvalAscending(poly, x) {
+  let result = 0;
+  for (let i = poly.length - 1; i >= 0; i--) {
+    result = gfMul(result, x) ^ poly[i];
+  }
+  return result;
+}
+
+function syndromes(codeword) {
+  return Array.from({length: ECC_BYTES}, (_, j) => {
+    let s = 0;
+    for (const b of codeword) {
+      s = gfMul(s, GF_EXP[j]) ^ b;
+    }
+    return s;
+  });
+}
+
+function solveLinear(A, b) {
+  const n = b.length;
+  A = A.map((row, i) => [...row, b[i]]);
+
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    while (pivot < n && A[pivot][col] === 0) pivot++;
+
+    if (pivot === n) throw Error("Uncorrectable Reed-Solomon block.");
+
+    [A[col], A[pivot]] = [A[pivot], A[col]];
+
+    const divisor = A[col][col];
+    for (let j = col; j <= n; j++) {
+      A[col][j] = gfDiv(A[col][j], divisor);
+    }
+
+    for (let row = 0; row < n; row++) {
+      if (row === col) continue;
+      const factor = A[row][col];
+      for (let j = col; j <= n; j++) {
+        A[row][j] ^= gfMul(factor, A[col][j]);
+      }
+    }
+  }
+
+  return A.map(row => row[n]);
+}
+
+function decodeRSBlock(input) {
+  const c = Uint8Array.from(input);
+  const S = syndromes(c);
+
+  if (S.every(v => v === 0)) {
+    return c.slice(0, c.length - ECC_BYTES);
+  }
+
+  // Berlekamp-Massey: locator coefficients in ascending order.
+  let C = [1], B = [1];
+  let L = 0, m = 1, b = 1;
+
+  for (let n = 0; n < ECC_BYTES; n++) {
+    let d = S[n];
+
+    for (let i = 1; i <= L; i++) {
+      d ^= gfMul(C[i] || 0, S[n - i]);
+    }
+
+    if (d === 0) {
+      m++;
+      continue;
+    }
+
+    const previous = C.slice();
+    const factor = gfDiv(d, b);
+
+    while (C.length < B.length + m) C.push(0);
+
+    for (let i = 0; i < B.length; i++) {
+      C[i + m] ^= gfMul(factor, B[i]);
+    }
+
+    if (2 * L <= n) {
+      L = n + 1 - L;
+      B = previous;
+      b = d;
+      m = 1;
+    } else {
+      m++;
+    }
+  }
+
+  C = C.slice(0, L + 1);
+
+  if (L === 0 || L > ECC_BYTES / 2) {
+    throw Error("Too many Reed-Solomon errors.");
+  }
+
+  // Locate errors by evaluating the locator at inverse powers.
+  const positions = [];
+  const locations = [];
+
+  for (let pos = 0; pos < c.length; pos++) {
+    const X = GF_EXP[(c.length - 1 - pos) % 255];
+    const inverse = GF_EXP[(255 - GF_LOG[X]) % 255];
+
+    if (polyEvalAscending(C, inverse) === 0) {
+      positions.push(pos);
+      locations.push(X);
+    }
+  }
+
+  if (positions.length !== L) {
+    throw Error("Could not locate all corrupted symbols.");
+  }
+
+  // Solve S[j] = sum(error[i] * X[i]^j).
+  const matrix = Array.from({length:L}, (_, j) =>
+    locations.map(X => gfPow(X, j))
+  );
+
+  const magnitudes = solveLinear(matrix, S.slice(0, L));
+
+  for (let i = 0; i < L; i++) {
+    c[positions[i]] ^= magnitudes[i];
+  }
+
+  if (syndromes(c).some(v => v !== 0)) {
+    throw Error("Reed-Solomon verification failed.");
+  }
+
+  return c.slice(0, c.length - ECC_BYTES);
+}
+
+function decodeRS(codeword, dataLength) {
+  const output = [];
+  let offset = 0;
+  let remaining = dataLength;
+
+  while (remaining > 0) {
+    const blockDataLength = Math.min(
+      remaining, MAX_DATA_PER_BLOCK
+    );
+    const blockLength = blockDataLength + ECC_BYTES;
+    const block = codeword.slice(offset, offset + blockLength);
+
+    if (block.length !== blockLength) {
+      throw Error("Truncated Reed-Solomon block.");
+    }
+
+    output.push(...decodeRSBlock(block));
+    offset += blockLength;
+    remaining -= blockDataLength;
+  }
+
+  return Uint8Array.from(output);
+}
+
+function nearestColor(r, g, b) {
+  let best = 0;
+  let bestDistance = Infinity;
+
+  for (let i = 0; i < PALETTE.length; i++) {
+    const p = PALETTE[i];
+    const distance =
+      (r - p[0]) ** 2 +
+      (g - p[1]) ** 2 +
+      (b - p[2]) ** 2;
+
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = i;
+    }
+  }
+
+  return best;
+}
+
+function decodeRectified(canvas, size) {
+  const {positions} = buildLayout(size);
+  const totalBytes = Math.floor(positions.length / 4);
+  const capacity = dataCapacity(totalBytes);
+  const blocks = Math.max(1, Math.ceil(capacity / MAX_DATA_PER_BLOCK));
+  const encodedLength = capacity + blocks * ECC_BYTES;
+
+  if (encodedLength > totalBytes) {
+    throw Error("Invalid encoded length.");
+  }
+
+  const totalModules = size + 2 * QUIET_ZONE;
+
+  if (canvas.width % totalModules !== 0 ||
+      canvas.height !== canvas.width) {
+    throw Error("Invalid rectified dimensions.");
+  }
+
+  const scale = canvas.width / totalModules;
+  const ctx = canvas.getContext("2d", {willReadFrequently:true});
+  const symbols = [];
+  const cache = new Map();
+
+  for (const [x, y] of positions.slice(0, encodedLength * 4)) {
+    const px = (x + QUIET_ZONE) * scale + Math.floor(scale / 2);
+    const py = (y + QUIET_ZONE) * scale + Math.floor(scale / 2);
+    const key = `${px},${py}`;
+
+    let symbol = cache.get(key);
+
+    if (symbol === undefined) {
+      const pixel = ctx.getImageData(px, py, 1, 1).data;
+      symbol = nearestColor(pixel[0], pixel[1], pixel[2]);
+      cache.set(key, symbol);
+    }
+
+    symbols.push(symbol);
+  }
+
+  const bytes = new Uint8Array(symbols.length / 4);
+
+  for (let i = 0; i < symbols.length; i += 4) {
+    bytes[i / 4] =
+      (symbols[i] << 6) |
+      (symbols[i + 1] << 4) |
+      (symbols[i + 2] << 2) |
+      symbols[i + 3];
+  }
+
+  const data = decodeRS(bytes, capacity);
+
+  if (data.length < 6) throw Error("Decoded data is too short.");
+
+  const view = new DataView(
+    data.buffer, data.byteOffset, data.byteLength
+  );
+
+  const payloadLength = view.getUint16(0, false);
+  const end = payloadLength + 2;
+
+  if (end + 4 > data.length) {
+    throw Error("Invalid payload length.");
+  }
+
+  const payload = data.slice(2, end);
+  const expectedCRC = view.getUint32(end, false);
+  const actualCRC = crc32(payload);
+
+  if (actualCRC !== expectedCRC) {
+    throw Error("CRC mismatch.");
+  }
+
+  return new TextDecoder("utf-8", {fatal:true}).decode(payload);
+}
+
+// Use OpenCV's finder-pattern geometry detector, then rectify each
+// supported candidate size into the canonical quiet-zone canvas.
+function detectAndDecode(sourceCanvas) {
+  if (!cv || !cv.QRCodeDetector) {
+    throw Error("OpenCV.js is not ready yet.");
+  }
+
+  const src = cv.imread(sourceCanvas);
+  const gray = new cv.Mat();
+  const detector = new cv.QRCodeDetector();
+  const points = new cv.Mat();
+
+  try {
+    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+
+    if (!detector.detect(gray, points) || points.empty()) {
+      throw Error("No candidate finder-pattern quadrilateral found.");
+    }
+
+    const corners = [];
+    const data = points.data32F;
+
+    for (let i = 0; i < 4; i++) {
+      corners.push([data[2 * i], data[2 * i + 1]]);
+    }
+
+    // Order corners as TL, TR, BR, BL.
+    const sums = corners.map(([x,y]) => x + y);
+    const diffs = corners.map(([x,y]) => y - x);
+
+    const ordered = [
+      corners[sums.indexOf(Math.min(...sums))],
+      corners[diffs.indexOf(Math.min(...diffs))],
+      corners[sums.indexOf(Math.max(...sums))],
+      corners[diffs.indexOf(Math.max(...diffs))]
+    ];
+
+    const srcPoints = cv.matFromArray(
+      4, 1, cv.CV_32FC2, ordered.flat()
+    );
+
+    try {
+      const errors = [];
+
+      for (let size = MIN_SIZE; size <= MAX_SIZE; size += SIZE_STEP) {
+        const total = size + 2 * QUIET_ZONE;
+        const scale = 8;
+        const outputSize = total * scale;
+        const q = QUIET_ZONE * scale;
+        const end = (QUIET_ZONE + size) * scale - 1;
+
+        const dstPoints = cv.matFromArray(
+          4, 1, cv.CV_32FC2,
+          [q,q, end,q, end,end, q,end]
+        );
+
+        const transform = cv.getPerspectiveTransform(
+          srcPoints, dstPoints
+        );
+        const corrected = new cv.Mat();
+
+        try {
+          cv.warpPerspective(
+            src, corrected, transform,
+            new cv.Size(outputSize, outputSize),
+            cv.INTER_LINEAR, cv.BORDER_CONSTANT,
+            new cv.Scalar(245,245,240,255)
+          );
+
+          const canvas = document.createElement("canvas");
+          canvas.width = canvas.height = outputSize;
+          cv.imshow(canvas, corrected);
+
+          try {
+            return decodeRectified(canvas, size);
+          } catch (e) {
+            errors.push(`${size}: ${e.message}`);
+          }
+        } finally {
+          dstPoints.delete();
+          transform.delete();
+          corrected.delete();
+        }
+      }
+
+      throw Error("All candidate sizes failed. " + errors.slice(-3).join("; "));
+    } finally {
+      srcPoints.delete();
+    }
+  } finally {
+    src.delete();
+    gray.delete();
+    points.delete();
+    detector.delete();
+  }
+}
+
+
+const PALETTE = [
+  [20, 20, 24],     // 00: near-black
+  [245, 245, 240],  // 01: ivory
+  [230, 55, 65],    // 10: red
+  [40, 115, 230]    // 11: blue
+];
+
+const MIN_SIZE = 21;
+const MAX_SIZE = 177;
+const SIZE_STEP = 4;
+const QUIET_ZONE = 4;
+const ECC_BYTES = 16;
+const MAX_DATA_PER_BLOCK = 239;
+
+const $ = id => document.getElementById(id);
+
+function buildLayout(size) {
+  const grid = Array.from({length:size}, () => Array(size).fill(0));
+  const reserved = Array.from(
+    {length:size}, () => Array(size).fill(false)
+  );
+
+  function put(x, y, color) {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    grid[y][x] = color;
+    reserved[y][x] = true;
+  }
+
+  for (const [ox, oy] of [
+    [0, 0], [size - 7, 0], [0, size - 7]
+  ]) {
+    for (let dy = -1; dy < 8; dy++) {
+      for (let dx = -1; dx < 8; dx++) {
+        const x = ox + dx, y = oy + dy;
+        if (x < 0 || y < 0 || x >= size || y >= size) continue;
+
+        let color = 1;
+        if (dx >= 0 && dx < 7 && dy >= 0 && dy < 7) {
+          const outer = dx === 0 || dx === 6 ||
+                        dy === 0 || dy === 6;
+          const center = dx >= 2 && dx <= 4 &&
+                         dy >= 2 && dy <= 4;
+          color = outer || center ? 0 : 1;
+        }
+        put(x, y, color);
+      }
+    }
+  }
+
+  for (let i = 8; i < size - 8; i++) {
+    put(i, 8, i % 2 === 0 ? 0 : 1);
+    put(8, i, i % 2 === 0 ? 0 : 1);
+  }
+
+  const positions = [];
+  let right = size - 1;
+  let upward = true;
+
+  while (right >= 0) {
+    const columns = right > 0 ? [right, right - 1] : [right];
+    const rows = upward
+      ? Array.from({length:size}, (_, i) => size - 1 - i)
+      : Array.from({length:size}, (_, i) => i);
+
+    for (const y of rows) {
+      for (const x of columns) {
+        if (!reserved[y][x]) positions.push([x, y]);
+      }
+    }
+
+    upward = !upward;
+    right -= 2;
+  }
+
+  return {grid, positions};
+}
+
+function dataCapacity(totalBytes) {
+  for (let n = totalBytes; n >= 0; n--) {
+    const blocks = Math.max(1, Math.ceil(n / MAX_DATA_PER_BLOCK));
+    if (n + blocks * ECC_BYTES <= totalBytes) return n;
+  }
+  return 0;
+}
+
+function chooseSize(payloadLength) {
+  const required = payloadLength + 6;
+
+  for (let size = MIN_SIZE; size <= MAX_SIZE; size += SIZE_STEP) {
+    const {positions} = buildLayout(size);
+    const capacity = dataCapacity(Math.floor(positions.length / 4));
+    if (capacity >= required) return size;
+  }
+
+  throw Error("Payload too large for the maximum 177 × 177 grid.");
+}
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^
+        ((crc & 1) ? 0xedb88320 : 0);
+    }
+  }
+
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function framePayload(payload, capacity) {
+  if (payload.length > 65535) {
+    throw Error("Payload cannot exceed 65535 UTF-8 bytes.");
+  }
+
+  const framed = new Uint8Array(capacity);
+  const view = new DataView(framed.buffer);
+
+  view.setUint16(0, payload.length, false);
+  framed.set(payload, 2);
+  view.setUint32(2 + payload.length, crc32(payload), false);
+
+  if (payload.length + 6 > capacity) {
+    throw Error("Payload does not fit.");
+  }
+
+  return framed;
+}
+
+// GF(256), primitive polynomial 0x11d.
+// Shared by the Reed–Solomon encoder and decoder.
+const GF_EXP = new Uint8Array(512);
+const GF_LOG = new Uint8Array(256);
+
+{
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    GF_EXP[i] = x;
+    GF_LOG[x] = i;
+    x <<= 1;
+    if (x & 256) x ^= 0x11d;
+  }
+  for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+}
+
+function gfMul(a, b) {
+  if (!a || !b) return 0;
+  return GF_EXP[GF_LOG[a] + GF_LOG[b]];
+}
+
+function polyMul(a, b) {
+  const out = new Uint8Array(a.length + b.length - 1);
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) {
+      out[i+j] ^= gfMul(a[i], b[j]);
+    }
+  }
+  return out;
+}
+
+function rsGenerator(n) {
+  let g = Uint8Array.of(1);
+  for (let i = 0; i < n; i++) {
+    g = polyMul(g, Uint8Array.of(1, GF_EXP[i]));
+  }
+  return g;
+}
+
+function encodeRSBlock(data) {
+  const generator = rsGenerator(ECC_BYTES);
+  const work = new Uint8Array(data.length + ECC_BYTES);
+  work.set(data);
+
+  for (let i = 0; i < data.length; i++) {
+    const coefficient = work[i];
+    if (!coefficient) continue;
+    for (let j = 0; j < generator.length; j++) {
+      work[i+j] ^= gfMul(generator[j], coefficient);
+    }
+  }
+
+  return Uint8Array.from([...data, ...work.slice(data.length)]);
+}
+
+function encodeRS(data) {
+  const out = [];
+  for (let start = 0; start < data.length; start += MAX_DATA_PER_BLOCK) {
+    out.push(...encodeRSBlock(data.slice(start, start + MAX_DATA_PER_BLOCK)));
+  }
+  return Uint8Array.from(out);
+}
+
+function pack2bpp(bytes) {
+  const symbols = [];
+  for (const b of bytes) {
+    symbols.push((b >> 6) & 3, (b >> 4) & 3,
+                 (b >> 2) & 3, b & 3);
+  }
+  return symbols;
+}
+
+function renderGrid(grid, scale) {
+  const size = grid.length;
+  const total = size + 2 * QUIET_ZONE;
+  const canvas = $("matrix");
+  canvas.width = canvas.height = total * scale;
+
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "rgb(245,245,240)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      ctx.fillStyle = `rgb(${PALETTE[grid[y][x]].join(",")})`;
+      ctx.fillRect(
+        (x + QUIET_ZONE) * scale,
+        (y + QUIET_ZONE) * scale,
+        scale, scale
+      );
+    }
+  }
+}
+
+function generate(text, scale) {
+  if (!Number.isInteger(scale) || scale < 1) {
+    throw Error("Scale must be a positive integer.");
+  }
+
+  const payload = new TextEncoder().encode(text);
+  const size = chooseSize(payload.length);
+  const {grid, positions} = buildLayout(size);
+  const capacity = dataCapacity(Math.floor(positions.length / 4));
+
+  const framed = framePayload(payload, capacity);
+  const codeword = encodeRS(framed);
+  const symbols = pack2bpp(codeword);
+
+  if (symbols.length > positions.length) {
+    throw Error("Encoded data exceeds grid capacity.");
+  }
+
+  while (symbols.length < positions.length) symbols.push(0);
+
+  for (let i = 0; i < positions.length; i++) {
+    const [x, y] = positions[i];
+    grid[y][x] = symbols[i];
+  }
+
+  renderGrid(grid, scale);
+
+  $("encodeStatus").textContent =
+    `Grid: ${size} × ${size}\n` +
+    `UTF-8 payload: ${payload.length} bytes\n` +
+    `Data capacity: ${capacity} bytes\n` +
+    `Reed–Solomon parity: ${ECC_BYTES} bytes per block\n` +
+    `Image: ${$("matrix").width} × ${$("matrix").height}px`;
+}
+
+$("encode").addEventListener("click", () => {
+  try {
+    generate($("source").value, Number($("scale").value));
+  } catch (err) {
+    $("encodeStatus").textContent = err.message;
+  }
+});
+
+$("download").addEventListener("click", () => {
+  const link = document.createElement("a");
+  link.download = "color2qr.png";
+  link.href = $("matrix").toDataURL("image/png");
+  link.click();
+});
+
+let stream = null;
+
+
+let scanning = false;
+let scanBusy = false;
+let lastScanTime = 0;
+
+$("start").addEventListener("click", async () => {
+  try {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: {ideal: "environment"},
+        width: {ideal: 1280},
+        height: {ideal: 720}
+      }
+    });
+
+    $("video").srcObject = stream;
+    await $("video").play();
+
+    scanning = true;
+    $("status").textContent = "Camera running. Searching for a code…";
+    requestAnimationFrame(scanFrame);
+  } catch (err) {
+    $("status").textContent = "Camera error: " + err.message;
+  }
+});
+
+$("stop").addEventListener("click", () => {
+  scanning = false;
+
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null;
+  $("video").srcObject = null;
+  $("status").textContent = "Camera stopped.";
+});
+
+async function scanFrame(timestamp) {
+  if (!scanning) return;
+
+  if (timestamp - lastScanTime >= 500 && !scanBusy) {
+    lastScanTime = timestamp;
+    scanBusy = true;
+
+    try {
+      const video = $("video");
+
+      if (video.readyState >= 2 && video.videoWidth) {
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        canvas.getContext("2d").drawImage(
+          video, 0, 0, canvas.width, canvas.height
+        );
+
+        $("snapshot").width = canvas.width;
+        $("snapshot").height = canvas.height;
+        $("snapshot").getContext("2d").drawImage(canvas, 0, 0);
+
+        const result = detectAndDecode(canvas);
+        $("result").value = result;
+        $("status").textContent = "Code decoded and CRC verified.";
+        //scanning = false;
+      }
+    } catch (err) {
+      $("status").textContent = "Searching… " + err.message;
+    } finally {
+      scanBusy = false;
+    }
+  }
+
+  if (scanning) requestAnimationFrame(scanFrame);
+}
+
+
+$("stop").addEventListener("click", () => {
+  if (stream) stream.getTracks().forEach(track => track.stop());
+  stream = null;
+  $("video").srcObject = null;
+  $("status").textContent = "Camera stopped.";
+});
+
+$("capture").addEventListener("click", () => {
+  const video = $("video");
+  if (!video.videoWidth) {
+    $("status").textContent = "Start the camera first.";
+    return;
+  }
+
+  const canvas = $("snapshot");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+
+  $("status").textContent =
+    "Frame captured. Automatic custom-code detection and decoding " +
+    "are not implemented in this starter version.";
+});
+
+$("copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText($("result").value);
+    $("status").textContent = "Copied to clipboard.";
+  } catch {
+    $("result").select();
+    $("status").textContent = "Select and copy the text manually.";
+  }
+});
+
+generate("Hello, world!", 8);
+</script>
+</body>
+</html>
