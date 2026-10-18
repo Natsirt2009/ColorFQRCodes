@@ -1,7 +1,7 @@
 # ColorFQRCodes
 
 ColorFQRCodes is a Kotlin/JVM library and desktop app for custom multicolor matrix codes. It supports 1–8 bits per module (2–256 colors), UTF-8 payloads up to 65,535 bytes, CRC-32 validation, and Reed–Solomon error correction.
-
+Theese Codes are not compatible with real QR Codes. They can't be scanned with a normal QR-Code Scanner
 ## Requirements
 
 - JDK 17 or later
