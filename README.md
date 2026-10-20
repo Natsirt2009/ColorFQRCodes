@@ -44,7 +44,7 @@ Encode UTF-8 text and save a PNG:
 
 ```kotlin
 import java.nio.file.Path
-import org.example.net.natsirt.colorfrqcodes.ColorFQRCode
+import net.natsirt.colorfrqcodes.ColorFQRCode
 
 fun main() {
 	val code = ColorFQRCode("Hello, world!".toByteArray(Charsets.UTF_8), bpp = 4)
@@ -57,7 +57,7 @@ Decode an image file or an image already in memory:
 ```kotlin
 import java.nio.file.Path
 import javax.imageio.ImageIO
-import org.example.net.natsirt.colorfrqcodes.ImageDecoder
+import net.natsirt.colorfrqcodes.ImageDecoder
 
 fun main() {
 	val image = requireNotNull(ImageIO.read(Path.of("hello.png").toFile()))
