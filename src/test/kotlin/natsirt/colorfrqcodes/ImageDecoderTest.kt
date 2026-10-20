@@ -23,6 +23,23 @@ class ImageDecoderTest {
     }
 
     @Test
+    fun `ARGB renderer matches JVM image renderer`() {
+        for (bpp in 1..8) {
+            val code = ColorFQRCode("Pixel parity".toByteArray(Charsets.UTF_8), bpp)
+            val image = code.render(scale = 3)
+            val rendered = code.renderArgb(scale = 3)
+
+            assertEquals(image.width, rendered.width)
+            assertEquals(image.height, rendered.height)
+            assertEquals(
+                image.getRGB(0, 0, image.width, image.height, null, 0, image.width).toList(),
+                rendered.pixels.toList(),
+                "Pixel mismatch at $bpp bpp"
+            )
+        }
+    }
+
+    @Test
     fun `decode browser scanner two-bit red and blue palette`() {
         val expected = "Browser camera palette compatibility"
         val image = ColorFQRCode(expected.toByteArray(Charsets.UTF_8), 2).render(scale = 8)

@@ -17,34 +17,13 @@ class ColorFQRCode(payload: ByteArray, val bpp: Int = 2) {
     }
 
     fun render(scale: Int = 12): BufferedImage {
-        require(scale >= 1) { "Scale must be at least 1." }
-        val (grid, positions) = buildLayout(size)
-        val capacity = calculateCapacity(positions.size * bpp / 8)
-        val framed = framePayload(capacity)
-        val codeword = encodeBlocks(framed)
-        val symbols = bytesToSymbols(codeword)
-        require(symbols.size <= positions.size) { "Encoded data exceeds the grid capacity." }
-        for (index in symbols.size until positions.size) symbols += 0
-        positions.forEachIndexed { index, (x, y) -> grid[y][x] = symbols[index] }
-
-        val total = size + QUIET_ZONE * 2
-        val image = BufferedImage(total * scale, total * scale, BufferedImage.TYPE_INT_RGB)
-        val graphics = image.createGraphics()
-        try {
-            graphics.color = Palette.make(bpp)[1]
-            graphics.fillRect(0, 0, image.width, image.height)
-            val palette = Palette.make(bpp)
-            for (y in grid.indices) {
-                for (x in grid[y].indices) {
-                    graphics.color = palette[grid[y][x]]
-                    graphics.fillRect((x + QUIET_ZONE) * scale, (y + QUIET_ZONE) * scale, scale, scale)
-                }
-            }
-        } finally {
-            graphics.dispose()
-        }
+        val rendered = renderArgb(scale)
+        val image = BufferedImage(rendered.width, rendered.height, BufferedImage.TYPE_INT_RGB)
+        image.setRGB(0, 0, rendered.width, rendered.height, rendered.pixels, 0, rendered.width)
         return image
     }
+
+    fun renderArgb(scale: Int = 12): RenderedCode = ColorFQREncoder(payload, bpp).renderArgb(scale)
 
     fun writePng(path: Path, scale: Int = 12) {
         require(ImageIO.write(render(scale), "png", path.toFile())) { "PNG writer is unavailable." }
