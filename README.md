@@ -1,7 +1,7 @@
 # ColorFQRCodes
 
-ColorFQRCodes is a Kotlin/JVM library and desktop app for custom multicolor matrix codes. It supports 1–8 bits per module (2–256 colors), UTF-8 payloads up to 65,535 bytes, CRC-32 validation, and Reed–Solomon error correction. The encoded format matches `anybpp.py`'s palette, finder layout, framing, and ECC scheme.
-
+ColorFQRCodes is a Kotlin/JVM library and desktop app for custom multicolor matrix codes. It supports 1–8 bits per module (2–256 colors), UTF-8 payloads up to 65,535 bytes, CRC-32 validation, and Reed–Solomon error correction.
+Theese Codes are not compatible with real QR Codes. They can't be scanned with a normal QR-Code Scanner
 ## Requirements
 
 - JDK 17 or later
@@ -37,30 +37,6 @@ dependencies {
 ```
 
 No separate OpenCV dependency is needed: it is published as an API dependency so the decoder's public types resolve for consumers. The artifact targets the JVM and requires JDK 17 or later.
-
-The artifact is currently published to the local Maven repository, not Maven Central. To share it with other developers, publish the same Maven publication to a Maven repository they can access, then add that repository to their `repositories` block. Use the same `implementation("net.natsirt.colorfqrcodes:colorfqrcodes:1.0.0")` declaration.
-
-### Use the Android Bitmap renderer
-
-The optional `:android` library module has no AWT dependency and returns a native Android `Bitmap`. Include this repository as a Gradle project (or publish the `android` module to your Maven repository), then add:
-
-```kotlin
-dependencies {
-	implementation(project(":android"))
-}
-```
-
-Render an image for a view or Compose `Image`:
-
-```kotlin
-import org.example.net.natsirt.colorfrqcodes.AndroidColorFQRCode
-
-val bitmap = AndroidColorFQRCode("Hello, Android!".toByteArray(), bpp = 4)
-	.render(scale = 12)
-imageView.setImageBitmap(bitmap)
-```
-
-Compose can display the returned bitmap with `Image(bitmap.asImageBitmap(), contentDescription = null)`.
 
 ## Library API
 
@@ -122,3 +98,4 @@ $env:COLORFQ_HTTPS_PASSWORD = 'your-keystore-password'
 .\gradlew.bat test
 .\gradlew.bat build
 ```
+QR Code is a registered trademark of DENSO WAVE INCORPORATED.
