@@ -24,7 +24,7 @@ object OpenCvRuntime {
     @Synchronized
     fun ensureLoaded() {
         if (!loaded) {
-            System.loadLibrary(Core.NATIVE_LIBRARY_NAME)
+            System.loadLibrary("opencv_java4")
             loaded = true
         }
     }
