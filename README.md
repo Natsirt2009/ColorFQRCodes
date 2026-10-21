@@ -21,6 +21,47 @@ From this repository, run:
 
 This compiles and installs `net.natsirt.colorfqrcodes:colorfqrcodes:1.0.0` in your local Maven repository (normally `%USERPROFILE%\.m2\repository`). Run it again after updating the library.
 
+### Android library
+
+The Android library is published separately as `net.natsirt.colorfqrcodes:colorfqrcodes-android:1.1.0`. With an Android SDK configured, publish it locally with:
+
+```powershell
+.\gradlew.bat :android:publishReleasePublicationToMavenLocal
+```
+
+In an Android project's `build.gradle.kts`, make sure `mavenLocal()` is included and add the dependency:
+
+```kotlin
+repositories {
+	mavenLocal()
+	google()
+	mavenCentral()
+}
+
+dependencies {
+	implementation("net.natsirt.colorfqrcodes:colorfqrcodes-android:1.1.0")
+}
+```
+
+The Android API package is `net.natsirt.colorfqrcodes`. `AndroidColorFQRCode` renders codes to `Bitmap`; `ImageDecoder` decodes Android `Bitmap` frames using the OpenCV Android dependency.
+
+For video, pass each available frame bitmap to `decodeFrame`. It returns `null` when that frame does not contain a decodable code, otherwise it returns the decoded text and detected corners:
+
+```kotlin
+import android.graphics.Bitmap
+import net.natsirt.colorfqrcodes.ImageDecoder
+
+val decoder = ImageDecoder()
+
+fun onVideoFrame(bitmap: Bitmap) {
+	decoder.decodeFrame(bitmap)?.let { result ->
+		val text = result.text
+		val corners = result.corners
+		// Handle a successfully decoded frame.
+	}
+}
+```
+
 ### Add it to another Kotlin/JVM project
 
 In the consumer project's `build.gradle.kts`, add `mavenLocal()` before Maven Central and declare the dependency:

@@ -1,6 +1,7 @@
-package org.example.net.natsirt.colorfrqcodes
+package net.natsirt.colorfqrcodes
 
 import android.graphics.Bitmap
+import org.example.net.natsirt.colorfrqcodes.ColorFQREncoder
 
 class AndroidColorFQRCode(payload: ByteArray, val bpp: Int = 2) {
     private val encoder = ColorFQREncoder(payload, bpp)

@@ -4,10 +4,14 @@ plugins {
 }
 
 group = "net.natsirt.colorfqrcodes"
-version = "1.0.0"
+version = "1.1.0"
+
+dependencies {
+    implementation("org.opencv:opencv:4.9.0")
+}
 
 android {
-    namespace = "net.natsirt.colorfqrcodes.android"
+    namespace = "net.natsirt.colorfqrcodes"
     compileSdk = 37
 
     defaultConfig {
@@ -33,7 +37,7 @@ afterEvaluate {
             create<MavenPublication>("release") {
                 groupId = "net.natsirt.colorfqrcodes"
                 artifactId = "colorfqrcodes-android"
-                version = "1.0.0"
+                version = project.version.toString()
                 from(components["release"])
             }
         }
